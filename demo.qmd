@@ -65,6 +65,10 @@ income_at_rate <- function(tau) {
 /* The two hand-drawn SVG charts fill their column without overflowing the
    slide: both are a 640x610 viewBox, taller than a slide at full width. */
 .flip-chart svg { width: 100%; height: auto; max-height: 575px; }
+
+/* Observable Inputs caps its label column at 120px, which wraps every label
+   in this deck onto two lines. The longest needs 186px. */
+.flip-controls form { --label-width: 200px; }
 </style>
 ```
 
@@ -220,7 +224,7 @@ flipPlot = function (out) {
 
 :::: {.columns}
 ::: {.column width="38%"}
-::: {style="font-size:0.62em"}
+::: {.flip-controls style="font-size:0.62em"}
 ```{ojs}
 //| echo: false
 viewof o_cg   = Inputs.range([10, 100], {value: 40, step: 5,   label: "Capital gain, %"})
@@ -327,7 +331,7 @@ lookup = function (gain, lvr, rate, io) {
 
 :::: {.columns}
 ::: {.column width="38%"}
-::: {style="font-size:0.62em"}
+::: {.flip-controls style="font-size:0.62em"}
 ```{ojs}
 //| echo: false
 viewof h_cg   = Inputs.range([0.1, 1],     {value: 0.4, step: 0.1,    label: "Capital gain"})
