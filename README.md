@@ -2,15 +2,13 @@
 
 > Built largely with AI. The deck, the four chart implementations and this
 > README were written by Claude working from my direction, and I have reviewed
-> and tested the result. Read it as a worked example rather than as hand-tuned
-> reference code.
+> and tested the result. Read it as a worked example. Don't rely on any numbers.
 
-Live: <https://wfmackey.github.io/quarto-revealjs-interactive-chart-demo/>
+View the slides at: <https://wfmackey.github.io/quarto-revealjs-interactive-chart-demo/>
 
-The same slider chart built four different ways, so the trade-offs are visible
-rather than argued about.
+The same slider chart built four different ways to illustrate trade-offs.
 
-This is a demo of mechanics, not of design. The revealjs theme, fonts and
+This is a demo of mechanics. The revealjs theme, fonts and
 colours are stock. Nothing depends on a Quarto extension, a custom format, a
 Lua filter or a theme file, and `tidyverse` is the only R dependency. Every
 chart uses simulated data, so the deck carries no data files and none of the
