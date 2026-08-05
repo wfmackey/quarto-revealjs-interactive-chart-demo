@@ -1,8 +1,14 @@
 # Interactive charts in Quarto revealjs — a demo deck
 
-A working demonstration of the layout and interactivity mechanics behind a
-research talk, with the same slider chart built four different ways so the
-trade-offs are visible rather than argued about.
+> Built largely with AI. The deck, the four chart implementations and this
+> README were written by Claude working from my direction, and I have reviewed
+> and tested the result. Read it as a worked example rather than as hand-tuned
+> reference code.
+
+Live: <https://wfmackey.github.io/quarto-revealjs-interactive-chart-demo/>
+
+The same slider chart built four different ways, so the trade-offs are visible
+rather than argued about.
 
 This is a demo of mechanics, not of design. The revealjs theme, fonts and
 colours are stock. Nothing depends on a Quarto extension, a custom format, a
@@ -34,7 +40,7 @@ which the Observable charts need — see below.
 This is the one thing that catches people out, so it is worth stating plainly.
 
 If you `quarto render demo.qmd` and then double-click `demo.html`, the browser
-opens it at a `file://` address. Slides 8 and 11 will work. Slides 9 and 10 will
+opens it at a `file://` address. Slides 1 and 4 will work. Slides 2 and 3 will
 be blank, and the page pops up an alert saying the Observable runtime does not
 work with `file://` URLs.
 
@@ -48,10 +54,10 @@ Which parts are affected:
 
 | Slide | What it uses | Works from `file://` |
 |---|---|---|
-| 8, hand-written SVG | a classic `<script>` block | yes |
-| 9, Observable Plot | `ojs` cells, ES modules | no |
-| 10, R + `ojs_define` | `ojs` cells, ES modules | no |
-| 11, ggplot frames | a classic `<script>` block | yes |
+| 1, hand-written SVG | a classic `<script>` block | yes |
+| 2, Observable Plot | `ojs` cells, ES modules | no |
+| 3, R + `ojs_define` | `ojs` cells, ES modules | no |
+| 4, ggplot frames | a classic `<script>` block | yes |
 
 Any of these serves it correctly:
 
@@ -85,35 +91,23 @@ fonts and the Observable runtime, and needs no network. It still needs an origin
 
 | Path | Function |
 |---|---|
-| `demo.qmd` | The deck, including its eleven lines of CSS |
+| `demo.qmd` | The deck, including its four rules of CSS |
 | `_flip-javascript.qmd` | Version 1 of the chart, kept in its own file because it is long |
-| `figs/` | Charts written by R at render time (created by the build) |
+| `figs/` | Charts written by R at render time; not tracked, the build makes them |
 
-There is no theme file and no stylesheet. The `<style>` block near the top of
-`demo.qmd` holds eleven rules and every one of them is part of a mechanic being
-demonstrated — a grid, two `z-index` layers, a display toggle, and a height cap.
-None of it is decoration.
+There is no theme file and no stylesheet. The deck uses the built-in revealjs
+`simple` theme, and the `<style>` block in `demo.qmd` holds four rules: two for
+the image stack the frame slider toggles, a height cap so the charts do not
+overrun a slide, and a wider label column for Observable Inputs, whose own
+stylesheet caps it at 120px and wraps every label. None of it is styling.
 
-## What each slide demonstrates
+## One chart, four ways
 
-Part one, layout:
-
-1. Section spacer — a heading with a `background-color` attribute. Reveal adds
-   `has-dark-background` and the stock theme inverts the text. No CSS at all.
-2. Three-panel chart row — three `column` divs inside a `columns` div, chart
-   headlines carried in `labs()` so they travel with the chart into any other
-   output format, and Quarto's built-in `aside` for the small print.
-3. A wall that reveals one quote at a time — a CSS grid where each cell is a
-   `.fragment`, with a pull-quote shown only while that cell carries Reveal's
-   built-in `.current-fragment` class. Four CSS rules, no JavaScript.
-4. Chart behind a list — two absolutely positioned layers separated by
-   `z-index`. Note `.nostretch` on the image: without it Reveal's auto-stretch
-   sets the height inline and overrides the stylesheet.
-
-Part two, one chart four ways. The chart plots after-tax against before-tax
-return for a stylised leveraged property investment. Because a capital gains
-tax discount taxes only part of the gain, the after-tax line sits above the
-45-degree no-tax line over a range of losses — the gold band.
+The chart plots after-tax against before-tax return for a stylised leveraged
+property investment. Because a capital gains tax discount taxes only part of
+the gain, the after-tax line sits above the 45-degree no-tax line over a range
+of losses — the gold band. Tax runs through the personal income schedule rather
+than a flat rate, so the line is kinked wherever the investor crosses a bracket.
 
 | Version | Approach | Lines |
 |---|---|---|
@@ -125,8 +119,8 @@ tax discount taxes only part of the gain, the after-tax line sits above the
 The same model sits behind all four, so the numbers agree. Versions 1 to 3 are
 also pixel-identical — same 640x610 frame, margins, ticks, type sizes and
 annotation placement — so the only thing left to compare is the code. Version 4
-is left in ggplot's own idiom, because looking like every other chart in the
-deck is the whole point of that approach.
+is left in ggplot's own idiom, because looking like an ordinary R chart is the
+whole point of that approach.
 
 ## The trade-offs
 
