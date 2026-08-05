@@ -1,10 +1,11 @@
 ---
 title: "Interactive charts in Quarto revealjs"
-subtitle: "Four ways to build the same slider chart, and the layout mechanics around it"
+subtitle: "Four ways to build the same interactive slider chart"
 author: "Demo deck"
 date: 2026-08-04
 format:
   revealjs:
+    theme: simple
     embed-resources: true
     slide-number: c
     # A bigger slide canvas is the YAML-native way to shrink type: Reveal lays
@@ -51,277 +52,21 @@ income_at_rate <- function(tau) {
 }
 ```
 
-```{r}
-#| label: fake-data
-#| include: false
-
-# Synthetic stand-ins for the real series, so the deck carries no data files.
-prices <- tibble(
-  date  = seq(ymd("1980-01-01"), ymd("2026-04-01"), by = "quarter"),
-  index = 100 * cumprod(1 + rnorm(length(date), 0.0165, 0.018))
-)
-
-ownership <- tribble(
-  ~age,     ~`1981`, ~`1991`, ~`2001`, ~`2011`, ~`2021`,
-  "25-34",       61,      57,      52,      47,      43,
-  "35-44",       75,      73,      71,      68,      64,
-  "45-54",       82,      81,      80,      79,      77
-) |>
-  pivot_longer(-age, names_to = "year", values_to = "rate",
-               names_transform = as.integer)
-
-deciles <- tibble(
-  decile = 1:10,
-  share  = c(0.4, 0.7, 1.1, 1.6, 2.4, 3.6, 5.5, 9.0, 19.7, 56.0)
-)
-
-weeks <- seq(ymd("2025-07-06"), ymd("2026-06-28"), by = "week")
-
-spike <- function(week, centre, height, width) {
-  height * exp(-(as.numeric(week - centre) / width)^2)
-}
-
-trends <- expand_grid(
-  week = weeks,
-  term = c("capital gains tax", "negative gearing")
-) |>
-  mutate(
-    interest = if_else(
-      term == "capital gains tax",
-      6 + spike(week, ymd("2026-05-12"), 94, 18) +
-          spike(week, ymd("2025-12-08"), 31, 14) +
-          spike(week, ymd("2026-02-16"), 22, 10) + runif(n(), 0, 5),
-      4 + spike(week, ymd("2026-05-12"), 96, 14) +
-          spike(week, ymd("2026-04-13"), 26, 9) + runif(n(), 0, 4)
-    ) |>
-      pmin(100)
-  )
-
-releases <- tibble(week = weeks[c(2, 9, 17, 24, 29, 33, 38, 41, 44, 46, 50)],
-                   interest = -4)
-```
-
-## What this deck shows
+## 1. Hand-written SVG and plain JavaScript
 
 ```{=html}
 <style>
-/* The only CSS in the deck. Every rule here IS one of the mechanics being
-   demonstrated — there is no styling. Theme, fonts and colours are stock. */
-
-/* Paper wall: a grid, and a quote shown only beside the fragment you are
-   currently on. `.current-fragment` is Reveal's own class. */
-.reports-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.8em 1em; }
-.report-cell { position: relative; }
-.report-cell .cg-quote { position: absolute; left: 103%; top: 0; width: 12em; opacity: 0; }
-.report-cell.current-fragment .cg-quote { opacity: 1; }
-
-/* Chart behind a list: two layers, separated by z-index. */
-.attention { position: relative; min-height: 650px; }
-.attention .attention-chart { position: absolute; inset: 0; z-index: 1; }
-/* `.nostretch` on the image stops Reveal's auto-stretch setting its height
-   inline, which would override anything here. */
-.attention .attention-chart img { width: 100%; height: 650px; object-fit: contain;
-                                  object-position: right center; }
-.attention .attention-list { position: relative; z-index: 2; width: 45%; }
+/* The only CSS in the deck, and both rules are mechanics rather than styling. */
 
 /* Precomputed frames: eleven images stacked, one visible at a time. */
 .frame-stack img { display: none; width: 100%; }
 .frame-stack img.frame-on { display: block; }
 
-/* Let the two SVG charts fill their column, but not overflow the slide:
-   both are a 640x610 viewBox, which is taller than a slide at full width. */
+/* The two hand-drawn SVG charts fill their column without overflowing the
+   slide: both are a 640x610 viewBox, taller than a slide at full width. */
 .flip-chart svg { width: 100%; height: auto; max-height: 575px; }
 </style>
 ```
-
-::: {.incremental}
-- Four layout mechanics: a section spacer, a three-panel chart row, a wall of fragments that reveals one pull-quote at a time, and a chart sitting behind a list.
-- The same interactive slider chart built four different ways, so the trade-offs are visible rather than argued about.
-- Plain Quarto throughout: stock revealjs theme, no custom format, no Lua filter, no extension, and `tidyverse` as the only R dependency.
-:::
-
-## Part one: layout mechanics {background-color="#0f766e"}
-
-A section spacer is one heading with a `background-color` attribute. Reveal adds
-`has-dark-background` and the stock theme inverts the text for you.
-
-## Three panels and a note
-
-:::: {.columns}
-::: {.column width="33%"}
-```{r}
-#| label: panel-prices
-#| echo: false
-#| fig-width: 4.7
-#| fig-height: 4.4
-prices |>
-  ggplot(aes(date, index)) +
-  annotate("rect", xmin = ymd("2007-07-01"), xmax = ymd("2025-06-30"),
-           ymin = -Inf, ymax = Inf, fill = pal$border, alpha = 0.5) +
-  geom_line(colour = pal$accent, linewidth = 0.7) +
-  scale_x_date(date_breaks = "10 years", date_labels = "%Y") +
-  labs(title = "Nominal prices multiplied many times over",
-       subtitle = "Price index, Q1 1980 = 100", x = NULL, y = NULL) +
-  theme_minimal(base_size = 11)
-```
-:::
-
-::: {.column width="33%"}
-```{r}
-#| label: panel-ownership
-#| echo: false
-#| fig-width: 4.7
-#| fig-height: 4.4
-ownership |>
-  mutate(highlight = age == "25-34") |>
-  ggplot(aes(year, rate, group = age, colour = highlight)) +
-  geom_line(linewidth = 0.7) +
-  geom_point(size = 1.4) +
-  scale_colour_manual(values = c(`TRUE` = pal$accent, `FALSE` = pal$subtle)) +
-  labs(title = "Ownership fell fastest for 25-34s",
-       subtitle = "Home ownership rate at each Census, per cent",
-       x = NULL, y = NULL) +
-  theme_minimal(base_size = 11) +
-  theme(legend.position = "none")
-```
-:::
-
-::: {.column width="33%"}
-```{r}
-#| label: panel-deciles
-#| echo: false
-#| fig-width: 4.7
-#| fig-height: 4.4
-deciles |>
-  mutate(top = decile == 10) |>
-  ggplot(aes(factor(decile), share, fill = top)) +
-  geom_col(width = 0.75) +
-  scale_fill_manual(values = c(`TRUE` = pal$accent, `FALSE` = pal$border)) +
-  labs(title = "The top decile takes most of the gains",
-       subtitle = "Share of net capital gains, per cent",
-       x = "Lifetime income decile", y = NULL) +
-  theme_minimal(base_size = 11) +
-  theme(legend.position = "none")
-```
-:::
-::::
-
-::: aside
-Three `column` divs inside a `columns` div, and Quarto's built-in `aside` for the
-small print. Chart headlines come from `labs()`, so they travel with the chart
-into any other output format. All three series are simulated and mean nothing.
-:::
-
-## A wall that reveals one quote at a time
-
-:::: {.columns}
-::: {.column width="46%"}
-::::::: {.reports-grid}
-::: {.report-cell .fragment}
-Ralph review (1999)
-
-[Replace indexation and averaging with a 50% discount]{.cg-quote}
-:::
-
-::: {.report-cell .fragment}
-PC (2004)
-
-[There should be a review of the CGT provisions]{.cg-quote}
-:::
-
-::: {.report-cell .fragment}
-Henry review (2010)
-
-[Only a 40 per cent discount for savings income]{.cg-quote}
-:::
-
-::: {.report-cell .fragment}
-Grattan (2016)
-
-[Reduce the CGT discount to 25 per cent]{.cg-quote}
-:::
-
-::: {.report-cell .fragment}
-RBA (2019)
-
-[Raises the level of prices by about 2 per cent]{.cg-quote}
-:::
-
-::: {.report-cell .fragment}
-OECD (2022)
-
-[Housing investment is tax-subsidised in some countries]{.cg-quote}
-:::
-:::::::
-:::
-
-::: {.column width="50%"}
-<!-- Left empty on purpose: the pull-quotes are absolutely positioned into it. -->
-:::
-::::
-
-::: aside
-Each cell is a `.fragment`, so the deck walks through them one at a time. The
-pull-quote beside a cell is shown only while that cell carries Reveal's built-in
-`.current-fragment` class — four CSS rules, no JavaScript. Titles are illustrative.
-:::
-
-```{r}
-#| label: trends-chart
-#| include: false
-
-trends_plot <- trends |>
-  ggplot(aes(week, interest, colour = term)) +
-  geom_line(linewidth = 0.7) +
-  geom_point(data = releases, inherit.aes = FALSE, aes(week, interest),
-             colour = pal$spell, size = 1.6) +
-  annotate("text", x = ymd("2026-05-12"), y = 104, label = "Budget",
-           colour = pal$gold, size = 3) +
-  scale_colour_manual(values = c("capital gains tax" = pal$accent,
-                                 "negative gearing" = pal$subtle)) +
-  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
-  scale_y_continuous(limits = c(-8, 110)) +
-  labs(title = "Attention spikes on Budget night",
-       subtitle = "Weekly search interest, peak = 100; dots mark releases",
-       x = NULL, y = NULL) +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "none")
-
-ggsave("figs/trends.png", trends_plot, width = 7.6, height = 4.8, dpi = 200)
-```
-
-## A chart behind a list
-
-:::::: {.attention}
-::: {.attention-chart}
-![](figs/trends.png){.nostretch fig-alt="Weekly search interest for two terms over a year, peaking on Budget night, with dots along the base marking publication dates."}
-:::
-
-::: {.attention-list}
-1. Who Pays Income Tax?
-2. Should Housing Home People or Money?
-3. CGT Discount Inquiry submission
-4. Is There a Better Way to Reform the Discount?
-5. What Are We Discounting For?
-6. Everyone Is Different
-7. Housing Leverage and the CGT Discount
-8. Same Amount, Different Tax
-:::
-::::::
-
-::: aside
-Two absolutely positioned layers separated by `z-index`: the chart fills the
-slide behind, the list sits in front. Four CSS rules.
-:::
-
-## Part two: one chart, four ways {background-color="#c2410c"}
-
-A stylised property investment. Before-tax return across, after-tax return up.
-Because the CGT discount taxes only part of the gain, the after-tax line sits
-above the 45-degree no-tax line over a range of losses. That gold band is the
-interesting object.
-
-## 1. Hand-written SVG and plain JavaScript
 
 {{< include _flip-javascript.qmd >}}
 
@@ -743,41 +488,25 @@ arithmetic: one parameter at eleven steps is eleven images and about a megabyte;
 two parameters is 121 images. The full seven-slider version is unreachable.
 :::
 
-## What each one costs
+## What each one costs {.smaller}
 
-Versions 1 to 3 are pixel-identical, so the only thing left to compare is the code.
+Versions 1 to 3 are pixel-identical, so only the code differs.
 
 | | Lines | Reads like | Reusable | Ceiling |
 |---|---|---|---|---|
-| Hand-written SVG | ~270 | nothing legible | no, nothing transfers | none; any effect is available |
-| Observable Plot | ~30 model + ~55 spec | a chart spec | yes, the spec is a function | awkward for state that depends on history |
-| R + `ojs_define` | ~35 R, ~10 JS, same spec | an R function | yes, reuses version 2's spec | grid size; only if the model factorises |
-| ggplot frames | ~30 R | an R script | yes, it is just ggplot | one parameter, maybe two |
+| Hand-written SVG | ~270 | nothing legible | no | none; any effect is available |
+| Observable Plot | ~30 model, ~55 spec | a chart spec | yes, it is a function | weak on history-dependent state |
+| R + `ojs_define` | ~35 R, ~10 JS | an R function | yes, same spec | grid size |
+| ggplot frames | ~30 R | an R script | yes, just ggplot | one parameter |
 
 ::: {.fragment}
-Deliberately not here: `shinylive`, which would run the R model in the browser
-through WebAssembly. It needs a Quarto extension, ships tens of megabytes, and
-re-renders the whole ggplot on every slider tick. And Vega-Lite, whose
-declarative slider bindings are close to ideal until you need a loop, which the
-amortisation schedule requires.
+Not here: `shinylive`, which needs a Quarto extension, ships tens of megabytes
+and re-renders the whole ggplot on every tick; and Vega-Lite, whose slider
+bindings are close to ideal until you need a loop, which the amortisation
+schedule does.
 :::
 
-## The honest summary
-
-The hand-written version wins on control and on weight, and loses on everything
-a colleague would care about: nobody can read it, nothing transfers to the next
-chart, and there is no line you can point at and say "that is the equation".
-Matching it in Plot cost about thirty lines of configuration, most of it spent
-switching off defaults — but that spec is then a function you call again.
-
-If the chart is a one-off centrepiece and the model is short, the hand-written
-trade is fine — but split the file so the model is one pure function and the
-drawing is another, which fixes most of the objection without changing anything.
-
-If the chart is one of several, or the model is the contribution rather than the
-illustration, put the model in R and let the browser draw.
-
 ::: aside
-Render with `quarto render demo.qmd`. Requires Quarto 1.4 or later, R, and
-`tidyverse`. Nothing else.
+`quarto preview demo.qmd`. Needs Quarto 1.4+, R and `tidyverse`. Slides 3 and 4
+use Observable, which is blocked over `file://` and must be served.
 :::
