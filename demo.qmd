@@ -1,0 +1,783 @@
+---
+title: "Interactive charts in Quarto revealjs"
+subtitle: "Four ways to build the same slider chart, and the layout mechanics around it"
+author: "Demo deck"
+date: 2026-08-04
+format:
+  revealjs:
+    embed-resources: true
+    slide-number: c
+    # A bigger slide canvas is the YAML-native way to shrink type: Reveal lays
+    # out in these coordinates and scales the whole slide to fit the screen, so
+    # headings and body text come down together. 1500x940 is ~77% of 1150x720.
+    width: 1500
+    height: 940
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+
+dir.create("figs", showWarnings = FALSE)
+set.seed(2026)
+
+# One palette, shared by the R charts and by the two JavaScript charts,
+# which hard-code the same hex values.
+pal <- list(accent = "#c2410c", spell = "#0f766e", gold = "#ca8a04",
+            text = "#1f2328", subtle = "#6b7280", border = "#d8dce1")
+
+# Resident income tax schedule from 1 July 2024, in dollars. The charts apply
+# this rather than a single flat rate, so the property price now matters:
+# 100 index points = PRICE dollars.
+PRICE <- 100000
+brackets <- tibble(lo   = c(0, 18200, 45000, 135000, 190000),
+                   rate = c(0, 0.16,  0.30,  0.37,   0.45))
+
+schedule_tax <- function(income) {
+  hi <- c(brackets$lo[-1], Inf)
+  tax <- sum(pmax(0, pmin(income, hi) - brackets$lo) * brackets$rate)
+  tax + min(0.02 * income, 0.10 * max(0, income - 24276))
+}
+
+dollars <- function(index) index / 100 * PRICE
+
+# The rate slider reads as a marginal rate; it sets pre-gain taxable income to
+# the bottom of the bracket where that rate applies.
+income_at_rate <- function(tau) {
+  i <- detect_index(brackets$rate, \(r) r >= tau - 1e-9)
+  if (i == 0) last(brackets$lo) else brackets$lo[i]
+}
+```
+
+```{r}
+#| label: fake-data
+#| include: false
+
+# Synthetic stand-ins for the real series, so the deck carries no data files.
+prices <- tibble(
+  date  = seq(ymd("1980-01-01"), ymd("2026-04-01"), by = "quarter"),
+  index = 100 * cumprod(1 + rnorm(length(date), 0.0165, 0.018))
+)
+
+ownership <- tribble(
+  ~age,     ~`1981`, ~`1991`, ~`2001`, ~`2011`, ~`2021`,
+  "25-34",       61,      57,      52,      47,      43,
+  "35-44",       75,      73,      71,      68,      64,
+  "45-54",       82,      81,      80,      79,      77
+) |>
+  pivot_longer(-age, names_to = "year", values_to = "rate",
+               names_transform = as.integer)
+
+deciles <- tibble(
+  decile = 1:10,
+  share  = c(0.4, 0.7, 1.1, 1.6, 2.4, 3.6, 5.5, 9.0, 19.7, 56.0)
+)
+
+weeks <- seq(ymd("2025-07-06"), ymd("2026-06-28"), by = "week")
+
+spike <- function(week, centre, height, width) {
+  height * exp(-(as.numeric(week - centre) / width)^2)
+}
+
+trends <- expand_grid(
+  week = weeks,
+  term = c("capital gains tax", "negative gearing")
+) |>
+  mutate(
+    interest = if_else(
+      term == "capital gains tax",
+      6 + spike(week, ymd("2026-05-12"), 94, 18) +
+          spike(week, ymd("2025-12-08"), 31, 14) +
+          spike(week, ymd("2026-02-16"), 22, 10) + runif(n(), 0, 5),
+      4 + spike(week, ymd("2026-05-12"), 96, 14) +
+          spike(week, ymd("2026-04-13"), 26, 9) + runif(n(), 0, 4)
+    ) |>
+      pmin(100)
+  )
+
+releases <- tibble(week = weeks[c(2, 9, 17, 24, 29, 33, 38, 41, 44, 46, 50)],
+                   interest = -4)
+```
+
+## What this deck shows
+
+```{=html}
+<style>
+/* The only CSS in the deck. Every rule here IS one of the mechanics being
+   demonstrated — there is no styling. Theme, fonts and colours are stock. */
+
+/* Paper wall: a grid, and a quote shown only beside the fragment you are
+   currently on. `.current-fragment` is Reveal's own class. */
+.reports-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.8em 1em; }
+.report-cell { position: relative; }
+.report-cell .cg-quote { position: absolute; left: 103%; top: 0; width: 12em; opacity: 0; }
+.report-cell.current-fragment .cg-quote { opacity: 1; }
+
+/* Chart behind a list: two layers, separated by z-index. */
+.attention { position: relative; min-height: 650px; }
+.attention .attention-chart { position: absolute; inset: 0; z-index: 1; }
+/* `.nostretch` on the image stops Reveal's auto-stretch setting its height
+   inline, which would override anything here. */
+.attention .attention-chart img { width: 100%; height: 650px; object-fit: contain;
+                                  object-position: right center; }
+.attention .attention-list { position: relative; z-index: 2; width: 45%; }
+
+/* Precomputed frames: eleven images stacked, one visible at a time. */
+.frame-stack img { display: none; width: 100%; }
+.frame-stack img.frame-on { display: block; }
+
+/* Let the two SVG charts fill their column, but not overflow the slide:
+   both are a 640x610 viewBox, which is taller than a slide at full width. */
+.flip-chart svg { width: 100%; height: auto; max-height: 575px; }
+</style>
+```
+
+::: {.incremental}
+- Four layout mechanics: a section spacer, a three-panel chart row, a wall of fragments that reveals one pull-quote at a time, and a chart sitting behind a list.
+- The same interactive slider chart built four different ways, so the trade-offs are visible rather than argued about.
+- Plain Quarto throughout: stock revealjs theme, no custom format, no Lua filter, no extension, and `tidyverse` as the only R dependency.
+:::
+
+## Part one: layout mechanics {background-color="#0f766e"}
+
+A section spacer is one heading with a `background-color` attribute. Reveal adds
+`has-dark-background` and the stock theme inverts the text for you.
+
+## Three panels and a note
+
+:::: {.columns}
+::: {.column width="33%"}
+```{r}
+#| label: panel-prices
+#| echo: false
+#| fig-width: 4.7
+#| fig-height: 4.4
+prices |>
+  ggplot(aes(date, index)) +
+  annotate("rect", xmin = ymd("2007-07-01"), xmax = ymd("2025-06-30"),
+           ymin = -Inf, ymax = Inf, fill = pal$border, alpha = 0.5) +
+  geom_line(colour = pal$accent, linewidth = 0.7) +
+  scale_x_date(date_breaks = "10 years", date_labels = "%Y") +
+  labs(title = "Nominal prices multiplied many times over",
+       subtitle = "Price index, Q1 1980 = 100", x = NULL, y = NULL) +
+  theme_minimal(base_size = 11)
+```
+:::
+
+::: {.column width="33%"}
+```{r}
+#| label: panel-ownership
+#| echo: false
+#| fig-width: 4.7
+#| fig-height: 4.4
+ownership |>
+  mutate(highlight = age == "25-34") |>
+  ggplot(aes(year, rate, group = age, colour = highlight)) +
+  geom_line(linewidth = 0.7) +
+  geom_point(size = 1.4) +
+  scale_colour_manual(values = c(`TRUE` = pal$accent, `FALSE` = pal$subtle)) +
+  labs(title = "Ownership fell fastest for 25-34s",
+       subtitle = "Home ownership rate at each Census, per cent",
+       x = NULL, y = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "none")
+```
+:::
+
+::: {.column width="33%"}
+```{r}
+#| label: panel-deciles
+#| echo: false
+#| fig-width: 4.7
+#| fig-height: 4.4
+deciles |>
+  mutate(top = decile == 10) |>
+  ggplot(aes(factor(decile), share, fill = top)) +
+  geom_col(width = 0.75) +
+  scale_fill_manual(values = c(`TRUE` = pal$accent, `FALSE` = pal$border)) +
+  labs(title = "The top decile takes most of the gains",
+       subtitle = "Share of net capital gains, per cent",
+       x = "Lifetime income decile", y = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "none")
+```
+:::
+::::
+
+::: aside
+Three `column` divs inside a `columns` div, and Quarto's built-in `aside` for the
+small print. Chart headlines come from `labs()`, so they travel with the chart
+into any other output format. All three series are simulated and mean nothing.
+:::
+
+## A wall that reveals one quote at a time
+
+:::: {.columns}
+::: {.column width="46%"}
+::::::: {.reports-grid}
+::: {.report-cell .fragment}
+Ralph review (1999)
+
+[Replace indexation and averaging with a 50% discount]{.cg-quote}
+:::
+
+::: {.report-cell .fragment}
+PC (2004)
+
+[There should be a review of the CGT provisions]{.cg-quote}
+:::
+
+::: {.report-cell .fragment}
+Henry review (2010)
+
+[Only a 40 per cent discount for savings income]{.cg-quote}
+:::
+
+::: {.report-cell .fragment}
+Grattan (2016)
+
+[Reduce the CGT discount to 25 per cent]{.cg-quote}
+:::
+
+::: {.report-cell .fragment}
+RBA (2019)
+
+[Raises the level of prices by about 2 per cent]{.cg-quote}
+:::
+
+::: {.report-cell .fragment}
+OECD (2022)
+
+[Housing investment is tax-subsidised in some countries]{.cg-quote}
+:::
+:::::::
+:::
+
+::: {.column width="50%"}
+<!-- Left empty on purpose: the pull-quotes are absolutely positioned into it. -->
+:::
+::::
+
+::: aside
+Each cell is a `.fragment`, so the deck walks through them one at a time. The
+pull-quote beside a cell is shown only while that cell carries Reveal's built-in
+`.current-fragment` class — four CSS rules, no JavaScript. Titles are illustrative.
+:::
+
+```{r}
+#| label: trends-chart
+#| include: false
+
+trends_plot <- trends |>
+  ggplot(aes(week, interest, colour = term)) +
+  geom_line(linewidth = 0.7) +
+  geom_point(data = releases, inherit.aes = FALSE, aes(week, interest),
+             colour = pal$spell, size = 1.6) +
+  annotate("text", x = ymd("2026-05-12"), y = 104, label = "Budget",
+           colour = pal$gold, size = 3) +
+  scale_colour_manual(values = c("capital gains tax" = pal$accent,
+                                 "negative gearing" = pal$subtle)) +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+  scale_y_continuous(limits = c(-8, 110)) +
+  labs(title = "Attention spikes on Budget night",
+       subtitle = "Weekly search interest, peak = 100; dots mark releases",
+       x = NULL, y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+
+ggsave("figs/trends.png", trends_plot, width = 7.6, height = 4.8, dpi = 200)
+```
+
+## A chart behind a list
+
+:::::: {.attention}
+::: {.attention-chart}
+![](figs/trends.png){.nostretch fig-alt="Weekly search interest for two terms over a year, peaking on Budget night, with dots along the base marking publication dates."}
+:::
+
+::: {.attention-list}
+1. Who Pays Income Tax?
+2. Should Housing Home People or Money?
+3. CGT Discount Inquiry submission
+4. Is There a Better Way to Reform the Discount?
+5. What Are We Discounting For?
+6. Everyone Is Different
+7. Housing Leverage and the CGT Discount
+8. Same Amount, Different Tax
+:::
+::::::
+
+::: aside
+Two absolutely positioned layers separated by `z-index`: the chart fills the
+slide behind, the list sits in front. Four CSS rules.
+:::
+
+## Part two: one chart, four ways {background-color="#c2410c"}
+
+A stylised property investment. Before-tax return across, after-tax return up.
+Because the CGT discount taxes only part of the gain, the after-tax line sits
+above the 45-degree no-tax line over a range of losses. That gold band is the
+interesting object.
+
+## 1. Hand-written SVG and plain JavaScript
+
+{{< include _flip-javascript.qmd >}}
+
+::: aside
+About 270 lines in `_flip-javascript.qmd`, of which roughly 15 are the
+economics; the rest builds and moves SVG nodes. No libraries. Every slider tick
+re-solves the model and mutates attributes on nodes that already exist, which is
+why it is instant. The fading trail and the ghost line depend on which slider
+moved last — trivial to track here, awkward everywhere else.
+:::
+
+## 2. Observable JS and Observable Plot
+
+```{ojs}
+//| output: false
+// Quarto ships the Observable runtime, Plot, and Inputs. Nothing is fetched.
+ink = ({accent: "#c2410c", spell: "#0f766e", gold: "#ca8a04",
+        text: "#1f2328", subtle: "#6b7280", bg: "#ffffff"})
+
+mortgageCost = function (rate, io) {
+  let pmt = rate / (1 - Math.pow(1 + rate, -30));
+  let bal = 1, sumIO = 0, sumPI = 0;
+  for (let t = 1; t <= 10; t++) {
+    const w = Math.pow(1.025, 10 - t);
+    sumIO += rate * w;
+    sumPI += rate * bal * w;
+    bal -= pmt - rate * bal;
+  }
+  return io ? sumIO : sumPI;
+}
+
+// Personal income tax: the resident schedule from 1 July 2024, not a flat
+// rate. P0 = 100 index points = PRICE dollars, so scale now matters.
+PRICE = 100000
+BR_LO = [0, 18200, 45000, 135000, 190000]
+BR_RATE = [0, 0.16, 0.30, 0.37, 0.45]
+scheduleTax = function (y) {
+  let t = 0;
+  for (let i = 0; i < BR_LO.length; i++) {
+    const hi = (i + 1 < BR_LO.length) ? BR_LO[i + 1] : Infinity;
+    t += Math.max(0, Math.min(y, hi) - BR_LO[i]) * BR_RATE[i];
+  }
+  return t + Math.min(0.02 * y, 0.10 * Math.max(0, y - 24276));
+}
+// The rate slider still reads as a marginal rate; it sets the investor's
+// pre-gain taxable income to the bottom of the bracket where that rate
+// applies, and the gain then stacks up through the schedule from there.
+incomeAtRate = function (tau) {
+  for (let i = 0; i < BR_LO.length; i++) if (BR_RATE[i] >= tau - 1e-9) return BR_LO[i];
+  return BR_LO[BR_LO.length - 1];
+}
+dollars = (idx) => idx / 100 * PRICE
+
+// The whole model, with nothing about pixels in it. Returns a function
+// giving after-tax return for any before-tax return, because the schedule
+// makes that relation piecewise linear rather than a single slope.
+flip = function ({gain, lvr, rate, rent, cost, tau, delta, io, sd}) {
+  const T = 10, P0 = 100, INFL = 0.025;
+  const dutyNom = sd ? 0.05 * P0 : 0;
+  const dutyReal = dutyNom * Math.pow(1 + INFL, T);
+  const rentTot = rent * P0 * T;
+  const cgNet = (1 - 0.02 * cost) * P0 * (1 + gain) - P0;
+  const nir = rentTot -
+    (0.055 * rentTot + 3 * (rent * P0 / 52) + 0.015 * P0 * T) * cost;
+  const rentalTotal = nir - mortgageCost(rate, io) * lvr * P0;
+  const E = cgNet + rentalTotal - dutyReal;
+
+  // Rental result is deducted (or taxed) in each of the ten years; the
+  // discounted gain lands once, in the year of sale.
+  const other = incomeAtRate(tau);
+  const rentalYr = dollars(rentalTotal / T);
+  const taxBase = scheduleTax(other);
+  const taxRent = scheduleTax(other + rentalYr);
+  const taxAt = (e) => {
+    const cg = e - rentalTotal + dutyReal;
+    const gainTaxable = dollars((1 - delta) * (cg - dutyNom));
+    return (T * (taxRent - taxBase) +
+            scheduleTax(other + rentalYr + gainTaxable) - taxRent) / PRICE * 100;
+  };
+  const yAt = (eAnnual) => (eAnnual * T - taxAt(eAnnual * T)) / T;
+  return {eYr: E / T, aYr: (E - taxAt(E)) / T, yAt: yAt, floorYr: flipFloor(yAt)};
+}
+
+// The curve is kinked, so the flip floor is bisected rather than solved.
+flipFloor = function (yAt) {
+  if (yAt(0) <= 0) return null;
+  if (yAt(-4) > 0) return -4;
+  let lo = -4, hi = 0;
+  for (let k = 0; k < 44; k++) {
+    const mid = (lo + hi) / 2;
+    if (yAt(mid) > 0) hi = mid; else lo = mid;
+  }
+  return hi;
+}
+```
+
+```{ojs}
+//| output: false
+clampDom = (v) => Math.min(Math.max(v, -4), 4)
+
+// Same 640x610 frame, margins, ticks and annotations as version 1, so the two
+// charts are pixel-identical. Note what that costs: more than half of this
+// spec exists to switch Plot's defaults back off.
+flipPlot = function (out) {
+  const labelY = Math.min(Math.max(out.yAt(-3.15), -3.5), 3.5);
+  const dx = clampDom(out.eYr), dy = clampDom(out.aYr);
+  return Plot.plot({
+    width: 640, height: 610,
+    marginLeft: 50, marginRight: 14, marginTop: 14, marginBottom: 48,
+    style: {color: ink.text, background: "transparent", fontSize: "13px"},
+    x: {domain: [-4, 4], ticks: [-4, -3, -2, -1, 0, 1, 2, 3, 4],
+        tickFormat: (d) => d + "%", tickSize: 0, tickPadding: 10, label: null},
+    y: {domain: [-4, 4], ticks: [-4, -3, -2, -1, 1, 2, 3, 4],
+        tickFormat: (d) => String(d), tickSize: 0, tickPadding: 6, label: null},
+    marks: [
+      out.floorYr === null ? null
+        : Plot.rect([{x1: Math.max(out.floorYr, -4), x2: 0, y1: -4, y2: 4}],
+                    {x1: "x1", x2: "x2", y1: "y1", y2: "y2",
+                     fill: ink.gold, fillOpacity: 0.18}),
+      Plot.ruleY([0], {stroke: ink.text, strokeOpacity: 0.35}),
+      Plot.ruleX([0], {stroke: ink.text, strokeOpacity: 0.35}),
+      Plot.line([[-4, -4], [4, 4]], {stroke: ink.subtle, strokeDasharray: "5 4"}),
+      Plot.text([{x: 3.3, y: 2.8, t: "No tax"}],
+                {x: "x", y: "y", text: "t", dy: -4, fill: ink.subtle, fontSize: 14}),
+      out.floorYr === null ? null
+        : Plot.text([{x: 0, y: -4, t: "flip\ninterval"}],
+                    {x: "x", y: "y", text: "t", dx: -6, dy: -12,
+                     textAnchor: "end", lineAnchor: "bottom",
+                     lineHeight: 1.15, fill: ink.gold, fontSize: 14}),
+      Plot.line(d3.range(0, 97).map(i => { const e = -4 + 8 * i / 96;
+                                            return [e, out.yAt(e)]; }),
+                {stroke: ink.accent, strokeWidth: 3, clip: true}),
+      Plot.text([{x: -3.15, y: labelY, t: "After tax"}],
+                {x: "x", y: "y", text: "t", dy: -17,
+                 fill: ink.accent, fontSize: 14}),
+      Plot.dot([[dx, dy]], {r: 7, fill: ink.spell, stroke: ink.bg,
+                            strokeWidth: 2, clip: true}),
+      Plot.text([{x: dx, y: dy, t: "Property\nspell"}],
+                {x: "x", y: "y", text: "t", dx: -12, dy: -12,
+                 textAnchor: "end", lineAnchor: "bottom",
+                 lineHeight: 1.15, fill: ink.spell, fontSize: 14}),
+      Plot.text(["Before-tax return, % a year"],
+                {frameAnchor: "bottom", dy: 40, fill: ink.text, fontSize: 15}),
+      Plot.text(["After-tax return, % a year"],
+                {frameAnchor: "top-left", dx: 8, dy: 7, textAnchor: "start",
+                 fill: ink.text, fontSize: 15})
+    ]
+  })
+}
+```
+
+:::: {.columns}
+::: {.column width="38%"}
+::: {style="font-size:0.62em"}
+```{ojs}
+//| echo: false
+viewof o_cg   = Inputs.range([10, 100], {value: 40, step: 5,   label: "Capital gain, %"})
+viewof o_lvr  = Inputs.range([0, 100],  {value: 100, step: 5,  label: "LVR, %"})
+viewof o_rate = Inputs.range([4, 9],    {value: 6, step: 0.25, label: "Mortgage rate, %"})
+viewof o_rent = Inputs.range([2, 6],    {value: 4, step: 0.5,  label: "Rent, % of value"})
+viewof o_tau  = Inputs.select([0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.47],
+                              {value: 0.45, label: "Marginal tax rate",
+                               format: (x) => (100 * x).toFixed(0) + "%"})
+viewof o_delta = Inputs.range([0, 0.5], {value: 0.5, step: 0.05, label: "CGT discount"})
+viewof o_io   = Inputs.toggle({value: true, label: "Interest only"})
+```
+
+```{ojs}
+//| output: false
+o_flipText = o_out.floorYr === null ? "No wedge, so no loss can flip." : "Losses up to **" + Math.abs(o_out.floorYr).toFixed(1) + "%** a year flip into after-tax profits."
+o_spellText = " The spell returns **" + o_out.eYr.toFixed(1) + "%** before tax and **" + o_out.aYr.toFixed(1) + "%** after."
+```
+
+```{ojs}
+//| echo: false
+md`${o_flipText}${o_spellText}`
+```
+:::
+:::
+
+::: {.column width="60%" .flip-chart}
+```{ojs}
+//| echo: false
+o_out = flip({gain: o_cg / 100, lvr: o_lvr / 100, rate: o_rate / 100,
+              rent: o_rent / 100, cost: 1, tau: o_tau, delta: o_delta,
+              io: o_io, sd: false})
+
+flipPlot(o_out)
+```
+:::
+::::
+
+::: aside
+Pixel-for-pixel the same chart as version 1, in about a third of the code: 30
+lines of model with no pixels in it, plus a 55-line Plot spec. Left alone, Plot
+draws a good chart that is not your chart, so much of that spec is
+`tickSize: 0`, explicit tick lists, `label: null`. The trail and ghost line are
+gone — "what changed since last time" is what a reactive dataflow discards.
+:::
+
+## 3. R computes, JavaScript only draws
+
+```{r}
+#| label: flip-grid
+#| include: false
+
+# The model, written where it can be read, reviewed and tested.
+flip_pre_tax <- function(gain, lvr, rate, interest_only,
+                         rent = 0.04, cost = 1, hold = 10, infl = 0.025,
+                         p0 = 100) {
+  # Each year's interest, carried to end-of-period real terms.
+  weights <- (1 + infl)^(hold - seq_len(hold))
+  payment <- rate / (1 - (1 + rate)^-30)
+
+  balance <- if (interest_only) {
+    rep(1, hold)
+  } else {
+    accumulate(seq_len(hold - 1), \(bal, i) bal - (payment - rate * bal), .init = 1)
+  }
+
+  rent_total <- rent * p0 * hold
+  costs      <- (0.055 * rent_total + 3 * (rent * p0 / 52) + 0.015 * p0 * hold) * cost
+  cg_net     <- (1 - 0.02 * cost) * p0 * (1 + gain) - p0
+
+  # Before-tax payoff and the taxable gain. Tax enters later, and linearly.
+  tibble(
+    e_pre  = cg_net + rent_total - costs - sum(rate * balance * weights) * lvr * p0,
+    cg_net = cg_net
+  )
+}
+
+flip_grid <- expand_grid(
+  gain = seq(0.10, 1.00, by = 0.10),
+  lvr  = seq(0, 1, by = 0.10),
+  rate = seq(0.04, 0.09, by = 0.005),
+  io   = c(TRUE, FALSE)
+) |>
+  mutate(payoff = pmap(list(gain, lvr, rate, io), flip_pre_tax)) |>
+  unnest(payoff) |>
+  mutate(across(c(e_pre, cg_net), \(x) round(x, 4)))
+
+ojs_define(flipgrid = flip_grid)
+```
+
+```{ojs}
+//| output: false
+// Two lines of arithmetic left in the browser, because after-tax return is
+// linear in the tax parameters once the before-tax payoff is known.
+rows = transpose(flipgrid)
+near = (v, xs) => xs.reduce((a, b) => Math.abs(b - v) < Math.abs(a - v) ? b : a)
+lookup = function (gain, lvr, rate, io) {
+  const g = near(gain, [...new Set(rows.map(d => d.gain))]);
+  const l = near(lvr,  [...new Set(rows.map(d => d.lvr))]);
+  const r = near(rate, [...new Set(rows.map(d => d.rate))]);
+  return rows.find(d => d.gain === g && d.lvr === l && d.rate === r && d.io === io);
+}
+```
+
+:::: {.columns}
+::: {.column width="38%"}
+::: {style="font-size:0.62em"}
+```{ojs}
+//| echo: false
+viewof h_cg   = Inputs.range([0.1, 1],     {value: 0.4, step: 0.1,    label: "Capital gain"})
+viewof h_lvr  = Inputs.range([0, 1],       {value: 1, step: 0.1,      label: "LVR"})
+viewof h_rate = Inputs.range([0.04, 0.09], {value: 0.06, step: 0.005, label: "Mortgage rate"})
+viewof h_tau  = Inputs.select([0.15, 0.25, 0.35, 0.45, 0.47],
+                              {value: 0.45, label: "Marginal tax rate",
+                               format: (x) => (100 * x).toFixed(0) + "%"})
+viewof h_delta = Inputs.range([0, 0.5], {value: 0.5, step: 0.05, label: "CGT discount"})
+viewof h_io   = Inputs.toggle({value: true, label: "Interest only"})
+```
+
+```{ojs}
+//| echo: false
+md`R sent **${rows.length}** precomputed rows. The browser picks one and applies tax. Sliders snap to the grid, which is the price of moving the model out.`
+```
+:::
+:::
+
+::: {.column width="60%" .flip-chart}
+```{ojs}
+//| echo: false
+h_row = lookup(h_cg, h_lvr, h_rate, h_io)
+
+// R sent the before-tax payoff and the taxable gain; the schedule is applied
+// here. Rental total is whatever the payoff is not explained by the gain.
+h_out = {
+  const rentalTotal = h_row.e_pre - h_row.cg_net;
+  const other = incomeAtRate(h_tau);
+  const rentalYr = dollars(rentalTotal / 10);
+  const taxBase = scheduleTax(other);
+  const taxRent = scheduleTax(other + rentalYr);
+  const taxAt = (e) => (10 * (taxRent - taxBase) +
+    scheduleTax(other + rentalYr + dollars((1 - h_delta) * (e - rentalTotal))) -
+    taxRent) / PRICE * 100;
+  const yAt = (eAnnual) => (eAnnual * 10 - taxAt(eAnnual * 10)) / 10;
+  return {eYr: h_row.e_pre / 10, aYr: (h_row.e_pre - taxAt(h_row.e_pre)) / 10,
+          yAt: yAt, floorYr: flipFloor(yAt)};
+}
+
+// The same drawing function as version 2 — only the model behind it changed.
+flipPlot(h_out)
+```
+:::
+::::
+
+::: aside
+`ojs_define()` is built into Quarto: it serialises an R object into the page for
+Observable to read. The economics now lives in an R function you could unit-test
+and show a referee, and the browser does two lines of arithmetic. This chart
+calls version 2's `flipPlot()` unchanged. The cost is the grid — five parameters
+at ten steps each is 100,000 rows.
+:::
+
+```{r}
+#| label: frames
+#| include: false
+
+# After-tax return as a function of before-tax return, under the schedule.
+after_tax <- function(e_annual, rental_total, tau, delta) {
+  other     <- income_at_rate(tau)
+  rental_yr <- dollars(rental_total / 10)
+  base <- schedule_tax(other)
+  rent <- schedule_tax(other + rental_yr)
+  e    <- e_annual * 10
+  gain <- schedule_tax(other + rental_yr + dollars((1 - delta) * (e - rental_total))) - rent
+  (e - (10 * (rent - base) + gain) / PRICE * 100) / 10
+}
+
+frame_plot <- function(delta, tau = 0.45) {
+  spell <- flip_pre_tax(0.40, 1.00, 0.06, TRUE)
+  rental_total <- spell$e_pre - spell$cg_net
+  curve <- tibble(e = seq(-4, 4, length.out = 97)) |>
+    mutate(a = map_dbl(e, after_tax, rental_total, tau, delta))
+  spell_pt <- tibble(x = spell$e_pre / 10,
+                     y = after_tax(spell$e_pre / 10, rental_total, tau, delta))
+  floor <- curve |> filter(a > 0) |> slice_min(e, n = 1) |> pull(e)
+  band  <- if (length(floor) && floor < 0) floor else 0
+
+  ggplot(curve, aes(e, a)) +
+    annotate("rect", xmin = band, xmax = 0, ymin = -4, ymax = 4,
+             fill = pal$gold, alpha = 0.18) +
+    geom_hline(yintercept = 0, colour = pal$subtle, linewidth = 0.3) +
+    geom_vline(xintercept = 0, colour = pal$subtle, linewidth = 0.3) +
+    geom_abline(slope = 1, intercept = 0, colour = pal$subtle, linetype = "22") +
+    geom_line(colour = pal$accent, linewidth = 1) +
+    geom_point(data = spell_pt, aes(x, y), colour = pal$spell, size = 3) +
+    annotate("text", x = 3.2, y = 2.6, label = "No tax",
+             colour = pal$subtle, size = 3.4) +
+    coord_cartesian(xlim = c(-4, 4), ylim = c(-4, 4)) +
+    labs(title = str_glue("CGT discount of {100 * delta}%"),
+         subtitle = "After-tax against before-tax return, % a year",
+         x = "Before tax", y = "After tax") +
+    theme_minimal(base_size = 13)
+}
+
+frames <- tibble(delta = seq(0, 0.5, by = 0.05)) |>
+  mutate(path = str_c("figs/frame-", str_pad(row_number(), 2, pad = "0"), ".png"),
+         shown = if_else(delta == max(delta), "frame-on", ""))
+
+pwalk(frames, \(delta, path, shown)
+      ggsave(path, frame_plot(delta), width = 6.6, height = 5.2, dpi = 150))
+```
+
+## 4. Precomputed frames from ggplot
+
+:::: {.columns}
+::: {.column width="38%"}
+The chart is an ordinary ggplot, rendered eleven times in R at eleven values of
+the CGT discount and stacked in the page. The slider changes which one is
+visible. Nothing is computed in the browser.
+
+```{r}
+#| label: frame-controls
+#| echo: false
+#| results: asis
+cat(str_glue(
+  '<p>CGT discount of <span id="frame-out">50%</span> ',
+  '<input id="frame-slider" type="range" min="1" ',
+  'max="{nrow(frames)}" step="1" value="{nrow(frames)}"></p>'
+))
+```
+:::
+
+::: {.column width="60%"}
+```{r}
+#| label: frame-stack
+#| echo: false
+#| results: asis
+frames |>
+  mutate(tag = str_glue(
+    '<img src="{path}" class="{shown}" alt="After-tax against before-tax ',
+    'return at a CGT discount of {100 * delta} per cent.">'
+  )) |>
+  pull(tag) |>
+  str_flatten("\n") |>
+  (\(imgs) cat('<div class="frame-stack">\n', imgs, '\n</div>\n', sep = ""))()
+
+cat('<script>
+(function () {
+  var s = document.getElementById("frame-slider");
+  var out = document.getElementById("frame-out");
+  var imgs = document.querySelectorAll(".frame-stack img");
+  s.addEventListener("input", function () {
+    var i = parseInt(s.value, 10) - 1;
+    imgs.forEach(function (im, j) { im.classList.toggle("frame-on", j === i); });
+    out.textContent = (i * 5) + "%";
+  });
+})();
+</script>')
+```
+:::
+::::
+
+::: aside
+All the code is R and there is no model in the browser at all. The limit is
+arithmetic: one parameter at eleven steps is eleven images and about a megabyte;
+two parameters is 121 images. The full seven-slider version is unreachable.
+:::
+
+## What each one costs
+
+Versions 1 to 3 are pixel-identical, so the only thing left to compare is the code.
+
+| | Lines | Reads like | Reusable | Ceiling |
+|---|---|---|---|---|
+| Hand-written SVG | ~270 | nothing legible | no, nothing transfers | none; any effect is available |
+| Observable Plot | ~30 model + ~55 spec | a chart spec | yes, the spec is a function | awkward for state that depends on history |
+| R + `ojs_define` | ~35 R, ~10 JS, same spec | an R function | yes, reuses version 2's spec | grid size; only if the model factorises |
+| ggplot frames | ~30 R | an R script | yes, it is just ggplot | one parameter, maybe two |
+
+::: {.fragment}
+Deliberately not here: `shinylive`, which would run the R model in the browser
+through WebAssembly. It needs a Quarto extension, ships tens of megabytes, and
+re-renders the whole ggplot on every slider tick. And Vega-Lite, whose
+declarative slider bindings are close to ideal until you need a loop, which the
+amortisation schedule requires.
+:::
+
+## The honest summary
+
+The hand-written version wins on control and on weight, and loses on everything
+a colleague would care about: nobody can read it, nothing transfers to the next
+chart, and there is no line you can point at and say "that is the equation".
+Matching it in Plot cost about thirty lines of configuration, most of it spent
+switching off defaults — but that spec is then a function you call again.
+
+If the chart is a one-off centrepiece and the model is short, the hand-written
+trade is fine — but split the file so the model is one pure function and the
+drawing is another, which fixes most of the objection without changing anything.
+
+If the chart is one of several, or the model is the contribution rather than the
+illustration, put the model in R and let the browser draw.
+
+::: aside
+Render with `quarto render demo.qmd`. Requires Quarto 1.4 or later, R, and
+`tidyverse`. Nothing else.
+:::

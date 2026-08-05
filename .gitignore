@@ -1,0 +1,7 @@
+.DS_Store
+.quarto/
+demo_files/
+
+# Written by R during the render; demo.html embeds them, so they are not
+# needed to view the deck.
+figs/

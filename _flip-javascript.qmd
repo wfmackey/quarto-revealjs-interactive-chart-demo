@@ -1,0 +1,353 @@
+```{=html}
+<div style="display:flex;gap:1.2rem;align-items:flex-start">
+  <div style="flex:0 0 38%;font-size:0.6em">
+    <p>Take <span style="color:#0f766e">an investment rental property</span>,
+      purchased for $100k and held for ten years, with:</p>
+    <ul>
+      <li><span><span>a nominal capital gain of
+          <span id="flip-cg-out">40%</span></span>
+        <input id="flip-cg" type="range" min="10" max="100" step="5" value="40"></span></li>
+      <li><span><span><label><input
+            id="flip-io" type="checkbox" checked> interest only</label>, at an LVR of
+          <span id="flip-lvr-out">100%</span></span>
+        <input id="flip-lvr" type="range" min="0" max="100" step="5" value="100"></span></li>
+      <li><span><span>a mortgage rate of
+          <span id="flip-rate-out">6%</span></span>
+        <input id="flip-rate" type="range" min="4" max="9" step="0.25" value="6"></span></li>
+      <li><span><span>renting at
+          <span id="flip-rent-out">4.0%</span> a year, real</span>
+        <input id="flip-rent" type="range" min="2" max="6" step="0.5" value="4"></span></li>
+      <li><span><span>other costs at
+          <span id="flip-cost-out">100%</span> of the paper's calibrations</span>
+        <input id="flip-cost" type="range" min="50" max="150" step="10" value="100"></span></li>
+      <li><label><input id="flip-sd" type="checkbox"> stamp duty of 5%</label></li>
+      <li><span><span>facing a marginal tax rate of
+          <span id="flip-tau-out">45%</span></span>
+        <input id="flip-tau" type="range" min="0" max="7" step="1" value="6"></span></li>
+      <li><span><span>and a CGT discount of
+          <span id="flip-delta-out">50%</span></span>
+        <input id="flip-delta" type="range" min="0" max="0.5" step="0.05" value="0.5"></span></li>
+    </ul>
+    <p id="flip-readout"></p>
+    <p id="flip-rate-note"></p>
+    <p style="text-align:right"><button type="button" id="flip-reset">&#8634; reset</button></p>
+  </div>
+  <div class="flip-chart" style="flex:1 1 auto;min-width:0">
+    <svg id="flip-svg" viewBox="0 0 640 610" role="img"
+         aria-label="After-tax return plotted against before-tax return, both annualised as in the paper's Figure A.1. Tax is applied through the personal income tax schedule rather than a single flat rate, so the after-tax line is a kinked curve rather than a straight line: its slope changes wherever the investor crosses a bracket. A gold band between the flip floor and zero marks before-tax losses that become after-tax profits. A dot labelled property spell shows one stylised spell built from the slider settings; it sits on the after-tax curve and moves as the sliders change. The marginal-rate slider sets the investor's pre-gain taxable income to the bottom of the bracket where that rate applies, so the gain then stacks up through the schedule from there and is taxed at more than one rate. A fading trail marks the spell's positions while one slider moves; engaging a different slider clears the trail and pins shadows of the previous after-tax curve and flip-interval edge. A checkbox adds 5% stamp duty: the real duty cost enters the before-tax payoff and the nominal amount joins the CGT cost base."></svg>
+  </div>
+</div>
+<script>
+(function () {
+  // ---- 1. Geometry. ----
+  var W = 640, H = 610, mL = 50, mR = 14, mT = 14, mB = 48;
+  var xmin = -4, xmax = 4, ymin = -4, ymax = 4;
+  var X = function (v) { return mL + (v - xmin) / (xmax - xmin) * (W - mL - mR); };
+  var Y = function (v) { return mT + (ymax - v) / (ymax - ymin) * (H - mT - mB); };
+  var clampDom = function (v) { return Math.min(Math.max(v, xmin), xmax); };
+  var svg = document.getElementById("flip-svg");
+  var NS = "http://www.w3.org/2000/svg";
+  function el(name, attrs, parent) {
+    var e = document.createElementNS(NS, name);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    (parent || svg).appendChild(e);
+    return e;
+  }
+  function txt(x, y, s, style, anchor, size) {
+    var e = el("text", {x: x, y: y, "text-anchor": anchor || "middle",
+                        "font-size": size || 14, style: style});
+    e.textContent = s;
+    return e;
+  }
+
+  // ---- 2. The property model. ----
+  var T = 10, PI = 0.025, P0 = 100;
+  var PRICE = 100000;                       // P0 = 100 index points = $100k
+  var MAINT0 = 0.015 * P0 * T;
+  var SELL0 = 0.02;
+  var SD_NOM = 0.05 * P0;
+  var SD_REAL = SD_NOM * Math.pow(1 + PI, T);
+  function multipliers(r) {
+    var pmt = r / (1 - Math.pow(1 + r, -30)), bal = 1, io = 0, pi = 0;
+    for (var t = 1; t <= T; t++) {
+      var w = Math.pow(1 + PI, T - t);
+      io += r * w;
+      pi += r * bal * w;
+      bal -= pmt - r * bal;
+    }
+    return {io: io, pi: pi};
+  }
+
+  // ---- 3. Personal income tax: the schedule, not a single rate. ----
+  // Resident rates from 1 July 2024. The paper assumes a flat 45% (or 30%);
+  // here the investor's other income decides which brackets the negative
+  // gearing deductions and the discounted gain actually land in.
+  var BR_LO   = [0, 18200, 45000, 135000, 190000];
+  var BR_RATE = [0, 0.16,  0.30,  0.37,   0.45];
+  var MED_RATE = 0.02, MED_LOW = 24276;     // levy shades in at 10c per $
+  var TAUS = [0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.47];
+  function scheduleTax(y) {
+    var t = 0;
+    for (var i = 0; i < BR_LO.length; i++) {
+      var hi = (i + 1 < BR_LO.length) ? BR_LO[i + 1] : Infinity;
+      t += Math.max(0, Math.min(y, hi) - BR_LO[i]) * BR_RATE[i];
+    }
+    return t + Math.min(MED_RATE * y, 0.10 * Math.max(0, y - MED_LOW));
+  }
+  // The slider still reads as a marginal rate. It now sets the investor's
+  // pre-gain taxable income to the bottom of the bracket where that rate
+  // applies, so the gain stacks up through the schedule from there.
+  function incomeAtRate(tau) {
+    for (var i = 0; i < BR_LO.length; i++) {
+      if (BR_RATE[i] >= tau - 1e-9) return BR_LO[i];
+    }
+    return BR_LO[BR_LO.length - 1];
+  }
+  var dollars = function (idx) { return idx / 100 * PRICE; };
+  var money = function (v) {
+    return "$" + Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  };
+
+  // ---- 4. Build every node once, then only ever move it. ----
+  var defs = el("defs", {});
+  var clip = el("clipPath", {id: "flip-clip"}, defs);
+  el("rect", {x: mL, y: mT, width: W - mL - mR, height: H - mT - mB}, clip);
+
+  var band = el("rect", {y: mT, height: H - mT - mB,
+                         style: "fill: #ca8a04; fill-opacity: 0.18"});
+  var floorGhost = el("line", {y1: mT, y2: H - mB, "stroke-width": 2, visibility: "hidden",
+                               style: "stroke: #ca8a04; stroke-opacity: 0.45"});
+
+  el("line", {x1: X(xmin), x2: X(xmax), y1: Y(0), y2: Y(0),
+              style: "stroke: currentColor; stroke-opacity: 0.35"});
+  el("line", {x1: X(0), x2: X(0), y1: Y(ymax), y2: Y(ymin),
+              style: "stroke: currentColor; stroke-opacity: 0.35"});
+  for (var v = -4; v <= 4; v += 1) {
+    txt(X(v), H - mB + 20, v + "%", "fill: #6b7280", "middle", 13);
+    if (v !== 0) txt(mL - 6, Y(v) + 4, v, "fill: #6b7280", "end", 13);
+  }
+  txt((mL + W - mR) / 2, H - 8, "Before-tax return, % a year",
+      "fill: #1f2328", "middle", 15);
+  txt(mL + 8, mT + 18, "After-tax return, % a year",
+      "fill: #1f2328", "start", 15);
+
+  el("line", {x1: X(xmin), y1: Y(xmin), x2: X(xmax), y2: Y(xmax),
+              "stroke-dasharray": "5 4",
+              style: "stroke: #6b7280"});
+  txt(X(3.3), Y(2.8), "No tax", "fill: #6b7280", "middle", 14);
+
+  // The after-tax relation is piecewise linear now, so it is a polyline.
+  var STEPS = 96;
+  var lineGroup = el("g", {"clip-path": "url(#flip-clip)"});
+  var ghostLine = el("polyline", {"stroke-width": 3, fill: "none", visibility: "hidden",
+                                  style: "stroke: #c2410c; stroke-opacity: 0.3"}, lineGroup);
+  var afterLine = el("polyline", {"stroke-width": 3, fill: "none",
+                                  style: "stroke: #c2410c"}, lineGroup);
+  var afterLabel = txt(X(-3.15), Y(0), "After tax", "fill: #c2410c", "middle", 14);
+  var bandLabel = el("text", {"text-anchor": "end", "font-size": 14,
+                              style: "fill: #ca8a04"});
+  var bandLine1 = el("tspan", {x: X(0) - 6, y: H - mB - 28}, bandLabel);
+  bandLine1.textContent = "flip";
+  var bandLine2 = el("tspan", {x: X(0) - 6, y: H - mB - 12}, bandLabel);
+  bandLine2.textContent = "interval";
+  var TRAIL = 10;
+  var trail = [], lastPos = null, trailDots = [];
+  var lastControl = null, prevState = null;
+  var DEFAULTS = {delta: "0.5", tau: "6", cg: "40", lvr: "100",
+                  rate: "6", rent: "4", cost: "100"};
+  for (var td = 0; td < TRAIL; td++) {
+    trailDots.push(el("circle", {r: 5, visibility: "hidden",
+                                 style: "fill: #0f766e"}));
+  }
+
+  var dot = el("circle", {r: 7,
+                          style: "fill: #0f766e; stroke: #ffffff; stroke-width: 2"});
+  var dotLabel = el("text", {"text-anchor": "end", "font-size": 14,
+                             style: "fill: #0f766e"});
+  var dotLine1 = el("tspan", {}, dotLabel);
+  dotLine1.textContent = "Property";
+  var dotLine2 = el("tspan", {}, dotLabel);
+  dotLine2.textContent = "spell";
+
+  var readout = document.getElementById("flip-readout");
+  var rateNote = document.getElementById("flip-rate-note");
+  var ids = ["delta", "tau", "cg", "lvr", "rate", "rent", "cost"];
+  var inputs = {}, outs = {};
+  ids.forEach(function (k) {
+    inputs[k] = document.getElementById("flip-" + k);
+    outs[k] = document.getElementById("flip-" + k + "-out");
+  });
+  var io = document.getElementById("flip-io");
+  var sd = document.getElementById("flip-sd");
+  var pc = function (v) { return (100 * v).toFixed(0) + "%"; };
+  var pc1 = function (v) { return v.toFixed(1) + "%"; };
+
+  function update() {
+    var d = parseFloat(inputs.delta.value);
+    var t = TAUS[parseInt(inputs.tau.value, 10)];
+    var other = incomeAtRate(t);           // pre-gain taxable income
+    var g = parseFloat(inputs.cg.value) / 100;
+    var b = parseFloat(inputs.lvr.value) / 100;
+    var y = parseFloat(inputs.rent.value) / 100;
+    var s = parseFloat(inputs.cost.value) / 100;
+    var rate = parseFloat(inputs.rate.value) / 100;
+    var mm = multipliers(rate);
+    var m = io.checked ? mm.io : mm.pi;
+    outs.delta.textContent = pc(d);
+    outs.tau.textContent = pc(t);
+    outs.cg.textContent = pc(g);
+    outs.lvr.textContent = pc(b);
+    outs.rate.textContent = parseFloat(inputs.rate.value).toFixed(2) + "%";
+    outs.rent.textContent = (100 * y).toFixed(1) + "%";
+    outs.cost.textContent = pc(s);
+
+    var rent = y * P0 * T;
+    var fee = 0.055 * rent;
+    var change = 3 * (y * P0 / 52);
+    var cgNet = (1 - SELL0 * s) * P0 * (1 + g) - P0;
+    var nirX = rent - (fee + change + MAINT0) * s;
+    var dutyReal = sd.checked ? SD_REAL : 0;
+    var dutyNom = sd.checked ? SD_NOM : 0;
+    var rentalTotal = nirX - m * b * P0;      // ten-year total; negative = geared
+    var E = cgNet + rentalTotal - dutyReal;
+
+    // Rental result is spread over the ten years and deducted (or taxed) at
+    // the investor's rate in each of them; the discounted gain lands once, in
+    // the year of sale, on top of that year's income.
+    var rentalYr = dollars(rentalTotal / T);
+    var taxBase = scheduleTax(other);
+    var taxRent = scheduleTax(other + rentalYr);
+    function taxAt(e) {                        // e is a ten-year total, index
+      var cg = e - rentalTotal + dutyReal;
+      var gainTaxable = dollars((1 - d) * (cg - dutyNom));
+      var gainTax = scheduleTax(other + rentalYr + gainTaxable) - taxRent;
+      return (T * (taxRent - taxBase) + gainTax) / PRICE * 100;
+    }
+    var yAt = function (eAnnual) {
+      var e = eAnnual * T;
+      return (e - taxAt(e)) / T;
+    };
+
+    var A = E - taxAt(E);
+    var eYr = E / T, aYr = A / T;
+
+    // The curve is kinked, so the flip floor is found by bisection rather
+    // than the closed form the flat-rate version could use.
+    var floorYr = null;
+    if (yAt(0) > 0) {
+      if (yAt(xmin) > 0) {
+        floorYr = xmin;
+      } else {
+        var lo = xmin, hi = 0;
+        for (var k = 0; k < 44; k++) {
+          var mid = (lo + hi) / 2;
+          if (yAt(mid) > 0) hi = mid; else lo = mid;
+        }
+        floorYr = hi;
+      }
+    }
+
+    var bandLeft = X(Math.max(floorYr === null ? 0 : floorYr, xmin));
+    band.setAttribute("x", bandLeft);
+    band.setAttribute("width", floorYr !== null ? Math.max(X(0) - bandLeft, 0) : 0);
+    bandLabel.setAttribute("visibility", floorYr !== null ? "visible" : "hidden");
+
+    var pts = [];
+    for (var i = 0; i <= STEPS; i++) {
+      var e = xmin + (xmax - xmin) * i / STEPS;
+      pts.push(X(e).toFixed(1) + "," + Y(yAt(e)).toFixed(1));
+    }
+    afterLine.setAttribute("points", pts.join(" "));
+    var labelY = Math.min(Math.max(Y(yAt(-3.15)) - 14, mT + 18), H - mB - 8);
+    afterLabel.setAttribute("y", labelY);
+
+    var cx = clampDom(eYr), cy = clampDom(aYr);
+    var sx = X(cx), sy = Y(cy);
+    if (lastPos && (lastPos.x !== sx || lastPos.y !== sy)) {
+      trail.push(lastPos);
+      if (trail.length > TRAIL) trail.shift();
+    }
+    lastPos = {x: sx, y: sy};
+    for (var i2 = 0; i2 < TRAIL; i2++) {
+      var p = trail[trail.length - 1 - i2];
+      if (p) {
+        trailDots[i2].setAttribute("cx", p.x);
+        trailDots[i2].setAttribute("cy", p.y);
+        trailDots[i2].setAttribute("r", 6.5 - i2 * (2.5 / (TRAIL - 1)));
+        trailDots[i2].setAttribute("fill-opacity", 0.45 - i2 * (0.40 / (TRAIL - 1)));
+        trailDots[i2].setAttribute("visibility", "visible");
+      } else {
+        trailDots[i2].setAttribute("visibility", "hidden");
+      }
+    }
+    dot.setAttribute("cx", X(cx));
+    dot.setAttribute("cy", Y(cy));
+    dot.setAttribute("stroke-dasharray", (cx !== eYr || cy !== aYr) ? "3 2" : "none");
+    var lx = Math.max(X(cx) - 12, mL + 74);
+    var ly = Math.max(Y(cy) - 26, mT + 32);
+    [dotLine1, dotLine2].forEach(function (ts) { ts.setAttribute("x", lx); });
+    dotLine1.setAttribute("y", ly);
+    dotLine2.setAttribute("y", ly + 15);
+
+    var verdict = E > 0 ? (A > 0 ? "profitable even before tax."
+                             : "a before-tax profit that tax turns into a loss.")
+                : A > 0 ? "flipped."
+                : "still a loss.";
+    var spell = "The property spell returns " + pc1(eYr) +
+                " a year before tax and " + pc1(aYr) + " after tax — " + verdict;
+    readout.textContent = floorYr !== null
+      ? "Losses up to " + pc1(Math.abs(floorYr)) +
+        " a year flip into after-tax profits. " + spell
+      : "No loss flips at this income and discount. " + spell;
+
+    // What rate the gain actually faces, versus the flat rate the paper assumes.
+    var gainTaxable = dollars((1 - d) * (cgNet - dutyNom));
+    var gainTax = scheduleTax(other + rentalYr + gainTaxable) - taxRent;
+    rateNote.textContent = gainTaxable > 0
+      ? "Starting from " + money(other) + " of other income, the discounted gain of " +
+        money(gainTaxable) + " is taxed at an average of " +
+        pc1(100 * gainTax / gainTaxable) + ", not " + pc(t) + "."
+      : "There is no positive taxable gain at these settings.";
+
+    prevState = {points: pts.join(" "),
+                 floorX: floorYr !== null ? X(Math.max(floorYr, xmin)) : null};
+  }
+
+  // ---- 5. Trail and ghost bookkeeping. ----
+  function onInput(id) {
+    if (id !== lastControl) {
+      lastControl = id;
+      trail = [];
+      if (prevState) {
+        ghostLine.setAttribute("points", prevState.points);
+        ghostLine.setAttribute("visibility", "visible");
+        if (prevState.floorX !== null) {
+          floorGhost.setAttribute("x1", prevState.floorX);
+          floorGhost.setAttribute("x2", prevState.floorX);
+          floorGhost.setAttribute("visibility", "visible");
+        } else {
+          floorGhost.setAttribute("visibility", "hidden");
+        }
+      }
+    }
+    update();
+  }
+  ids.forEach(function (k) { inputs[k].addEventListener("input", function () { onInput(k); }); });
+  io.addEventListener("change", function () { onInput("io"); });
+  sd.addEventListener("change", function () { onInput("sd"); });
+
+  document.getElementById("flip-reset").addEventListener("click", function () {
+    ids.forEach(function (k) { inputs[k].value = DEFAULTS[k]; });
+    io.checked = true;
+    sd.checked = false;
+    trail = [];
+    lastPos = null;
+    lastControl = null;
+    ghostLine.setAttribute("visibility", "hidden");
+    floorGhost.setAttribute("visibility", "hidden");
+    update();
+  });
+  update();
+})();
+</script>
+```
